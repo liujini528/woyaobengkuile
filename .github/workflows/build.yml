@@ -12,16 +12,10 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Fix gradlew and force execute
-        run: |
-          # 强制修复 Windows 换行符，并给所有权限
-          sed -i 's/\r$//' gradlew
-          chmod +x gradlew
-          ls -l gradlew
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v3
       - name: Build APK
-        run: |
-          # 直接调用 bash 执行
-          bash ./gradlew assembleDebug
+        run: gradle assembleDebug
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:

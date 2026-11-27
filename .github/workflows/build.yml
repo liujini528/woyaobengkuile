@@ -17,14 +17,14 @@ jobs:
           object Config {
               var espEnable = true
               var aimEnable = false
-              var aimSmooth = 1.0f       // 1.0 等于锁死（追踪）
-              var aimFov = 800f          // 追踪范围（像素）
-              var trackChance = 100      // 追踪概率 0-100%
+              var aimSmooth = 1.0f
+              var aimFov = 800f
+              var trackChance = 100
               var authed = false
           }
           EOF
 
-          # 2. 悬浮窗控制台（全中文）
+          # 2. 悬浮窗控制台
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/MenuView.kt
           package com.android.systemhelper
           import android.content.Context
@@ -126,7 +126,7 @@ jobs:
           }
           EOF
 
-          # 3. 无障碍服务（带概率抽奖与瞬间锁定）
+          # 3. 无障碍服务（补全了 AccessibilityEvent 导入！）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/HackAccessibilityService.kt
           package com.android.systemhelper
           import android.accessibilityservice.AccessibilityService
@@ -137,6 +137,7 @@ jobs:
           import android.os.Looper
           import android.view.Gravity
           import android.view.WindowManager
+          import android.view.accessibility.AccessibilityEvent
           import kotlin.random.Random
 
           class HackAccessibilityService : AccessibilityService() {
@@ -176,8 +177,6 @@ jobs:
 
               private fun doMagneticAim() {
                   if (!Config.authed || Detector.latest.isEmpty()) return
-                  
-                  // 概率判定：如果没中奖，这一帧就不锁
                   if (Random.nextInt(100) >= Config.trackChance) return
 
                   val dm = resources.displayMetrics
@@ -194,11 +193,8 @@ jobs:
                   }
                   
                   bestTarget?.let { target ->
-                      // 锁定目标上半身
                       val targetX = target.x + target.w / 2f
                       val targetY = target.y + target.h / 3f
-                      
-                      // 这里我们直接把平滑度写死为 1.0，实现瞬间“吸”过去
                       val path = Path()
                       path.moveTo(cx, cy)
                       path.lineTo(targetX, targetY)
@@ -208,7 +204,7 @@ jobs:
                       dispatchGesture(gesture, null, null)
                   }
               }
-              override fun onAccessibilityEvent(event: android.view.AccessibilityEvent?) {}
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
               override fun onInterrupt() {}
           }
           EOF

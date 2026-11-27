@@ -7,10 +7,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Fix XML Error
+      - name: Fix Errors
         run: |
-          # 直接强行覆盖那个报错的 XML 文件，改成正确的资源引用
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
+          sed -i 's/COLOR_RGBA2HSV/COLOR_RGB2HSV/g' app/src/main/java/com/android/systemhelper/Detector.kt
       - name: set up JDK 17
         uses: actions/setup-java@v4
         with:

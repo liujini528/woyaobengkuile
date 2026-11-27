@@ -7,19 +7,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Fix Errors and Rebuild
+      - name: Fix Errors and Rebuild (Aimbot + ESP)
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
           
-          sed -i 's/COLOR_RGBA2HSV/COLOR_RGB2HSV/g' app/src/main/java/com/android/systemhelper/Detector.kt
-          
-          # 强制修改 HackAccessibilityService.kt，加入绘图测试和后台服务
+          # 核心服务：高频刷新画布 + 自动执行滑动自瞄
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/HackAccessibilityService.kt
           package com.android.systemhelper
           import android.accessibilityservice.AccessibilityService
-          import android.content.Intent
+          import android.accessibilityservice.GestureDescription
+          import android.graphics.Path
           import android.graphics.PixelFormat
-          import android.os.Build
           import android.os.Handler
           import android.os.Looper
           import android.view.WindowManager
@@ -40,20 +38,59 @@ jobs:
                       PixelFormat.TRANSLUCENT)
                   wm.addView(overlay, lp)
                   
-                  // 每 30ms 刷新一次画布
                   handler.postDelayed(object : Runnable {
                       override fun run() {
                           overlay.invalidate()
-                          handler.postDelayed(this, 30L)
+                          performAimAssist()
+                          handler.postDelayed(this, 50L) // 每50ms执行一次自瞄
                       }
-                  }, 30L)
+                  }, 50L)
               }
+
+              private fun performAimAssist() {
+                  if (!Config.authed || Detector.latest.isEmpty()) return
+                  
+                  // 获取屏幕中心点（准星位置）
+                  val dm = resources.displayMetrics
+                  val cx = dm.widthPixels / 2f
+                  val cy = dm.heightPixels / 2f
+
+                  // 找到离准星最近的目标
+                  var bestTarget: Detector.Target? = null
+                  var minDist = 600f // 自瞄范围：600像素，避免乱锁
+                  
+                  for (t in Detector.latest) {
+                      val tx = t.x + t.w / 2f
+                      val ty = t.y + t.h / 2f
+                      val dist = Math.hypot((tx - cx).toDouble(), (ty - cy).toDouble()).toFloat()
+                      if (dist < minDist) {
+                          minDist = dist
+                          bestTarget = t
+                      }
+                  }
+
+                  // 模拟手指滑动，把准星拖过去
+                  bestTarget?.let { target ->
+                      val targetX = target.x + target.w / 2f
+                      val targetY = target.y + target.h / 3f // 偏向头部位置
+                      
+                      val path = Path()
+                      path.moveTo(cx, cy)
+                      path.lineTo(targetX, targetY)
+                      
+                      val gesture = GestureDescription.Builder()
+                          .addStroke(GestureDescription.StrokeDescription(path, 0, 40)) // 40ms 快速滑动
+                          .build()
+                      dispatchGesture(gesture, null, null)
+                  }
+              }
+
               override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
               override fun onInterrupt() {}
           }
           EOF
           
-          # 强制修改 OverlayView.kt，保证能画出东西
+          # 修改画布，取消死框，只画动态目标
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/OverlayView.kt
           package com.android.systemhelper
           import android.content.Context
@@ -61,18 +98,12 @@ jobs:
           import android.view.View
 
           class OverlayView(c: Context) : View(c) {
-              private val paintBox = Paint().apply { color = 0xFF00FF00.toInt(); style = Paint.Style.STROKE; strokeWidth = 5f }
-              private val paintText = Paint().apply { color = 0xFF00FF00.toInt(); textSize = 50f; isAntiAlias = true }
+              private val paintBox = Paint().apply { color = 0xFF00FF00.toInt(); style = Paint.Style.STROKE; strokeWidth = 4f }
+              private val paintText = Paint().apply { color = 0xFF00FF00.toInt(); textSize = 36f; isAntiAlias = true }
 
               override fun onDraw(canvas: Canvas) {
                   super.onDraw(canvas)
                   if (!Config.authed) return
-                  
-                  // 强制画一个固定的测试框和文字
-                  canvas.drawRect(200f, 400f, 800f, 1000f, paintBox)
-                  canvas.drawText("测试绿框已加载", 200f, 380f, paintText)
-                  
-                  // 如果检测到目标，也画出来
                   for (t in Detector.latest) {
                       canvas.drawRect(t.x.toFloat(), t.y.toFloat(), (t.x + t.w).toFloat(), (t.y + t.h).toFloat(), paintBox)
                   }
@@ -80,75 +111,7 @@ jobs:
           }
           EOF
 
-          # 强制修改 ScreenCaptureService.kt，增加安全启动
-          cat << 'EOF' > app/src/main/java/com/android/systemhelper/ScreenCaptureService.kt
-          package com.android.systemhelper
-          import android.app.*
-          import android.content.Intent
-          import android.graphics.Bitmap
-          import android.graphics.PixelFormat
-          import android.hardware.display.DisplayManager
-          import android.hardware.display.VirtualDisplay
-          import android.media.ImageReader
-          import android.media.projection.MediaProjectionManager
-          import android.os.Build
-          import android.os.Handler
-          import android.os.IBinder
-          import android.os.Looper
-          import androidx.core.app.NotificationCompat
-
-          class ScreenCaptureService : Service() {
-              private var vd: VirtualDisplay? = null
-              private var reader: ImageReader? = null
-
-              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                  try {
-                      createChannel()
-                      startForeground(1, getNotif())
-                      
-                      val resultCode = intent?.getIntExtra("code", 0) ?: 0
-                      val data = intent?.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
-                      val mp = (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager).getMediaProjection(resultCode, data)
-                      val dm = resources.displayMetrics
-                      val w = dm.widthPixels
-                      val h = dm.heightPixels
-                      
-                      reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-                      vd = mp.createVirtualDisplay("cap", w, h, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
-                      
-                      reader!!.setOnImageAvailableListener({ r ->
-                          val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
-                          try {
-                              val buffer = img.planes[0].buffer
-                              val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                              bmp.copyPixelsFromBuffer(buffer)
-                              Detector.submit(bmp)
-                          } catch (e: Exception) {
-                              e.printStackTrace()
-                          } finally {
-                              img.close()
-                          }
-                      }, Handler(Looper.getMainLooper()))
-                  } catch (e: Exception) {
-                      e.printStackTrace()
-                  }
-                  return START_STICKY
-              }
-
-              private fun createChannel() {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      val ch = NotificationChannel("1", "SYS", NotificationManager.IMPORTANCE_LOW)
-                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
-                  }
-              }
-              private fun getNotif(): Notification {
-                  return NotificationCompat.Builder(this, "1").setContentTitle("运行中").setSmallIcon(android.R.drawable.ic_menu_camera).build()
-              }
-              override fun onBind(intent: Intent?): IBinder? = null
-          }
-          EOF
-
-          # 修改 Detector，加上 try-catch 防止崩溃
+          # 边缘检测，暴力识别人形轮廓
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
           package com.android.systemhelper
           import android.graphics.Bitmap
@@ -162,7 +125,7 @@ jobs:
               @Volatile var latest: List<Target> = emptyList()
               private val executor = Executors.newSingleThreadExecutor()
               private var busy = false
-              private const val SCALE = 0.4f
+              private const val SCALE = 0.3f
 
               fun submit(bmp: Bitmap) {
                   if (busy) return
@@ -173,19 +136,20 @@ jobs:
                           val sh = (bmp.height * SCALE).toInt()
                           val scaledBmp = Bitmap.createScaledBitmap(bmp, sw, sh, false)
                           val rgba = Mat(); Utils.bitmapToMat(scaledBmp, rgba)
-                          val hsv = Mat(); Imgproc.cvtColor(rgba, hsv, Imgproc.COLOR_RGB2HSV)
-                          val maskBody = Mat()
-                          Core.inRange(hsv, Scalar(0.0, 0.0, 0.0), Scalar(180.0, 255.0, 80.0), maskBody)
+                          val gray = Mat(); Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
+                          
+                          val edges = Mat()
+                          Imgproc.Canny(gray, edges, 50.0, 150.0)
+                          
                           val contours = ArrayList<MatOfPoint>()
-                          Imgproc.findContours(maskBody, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                          Imgproc.findContours(edges, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                          
                           val out = ArrayList<Target>()
                           for (c in contours) {
                               val r = Imgproc.boundingRect(c)
-                              val ar = r.width.toFloat() / r.height.toFloat()
-                              if (ar < 0.25f || ar > 1.2f) continue
-                              if (r.width < 15 * SCALE || r.height < 30 * SCALE) continue
-                              if (r.y < sh * 0.3f) continue
-                              out.add(Target((r.x / SCALE).toInt(), (r.y / SCALE).toInt(), (r.width / SCALE).toInt(), (r.height / SCALE).toInt(), 100))
+                              if (r.width > 20 && r.height > 40 && r.width < 400 && r.height < 800) {
+                                  out.add(Target((r.x / SCALE).toInt(), (r.y / SCALE).toInt(), (r.width / SCALE).toInt(), (r.height / SCALE).toInt(), 100))
+                              }
                           }
                           latest = out
                       } catch (e: Exception) {

@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Build Ultimate Magic Hack
+      - name: Build Recoil Hack
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
 
@@ -15,16 +15,13 @@ jobs:
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Config.kt
           package com.android.systemhelper
           object Config {
-              var espEnable = true
-              var aimEnable = false
-              var aimSmooth = 1.0f
-              var aimFov = 800f
-              var trackChance = 100
+              var recoilEnable = false
+              var recoilPower = 15.0f // 压枪力度（像素）
               var authed = false
           }
           EOF
 
-          # 2. 悬浮窗控制台
+          # 2. 悬浮窗控制台（中文）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/MenuView.kt
           package com.android.systemhelper
           import android.content.Context
@@ -35,7 +32,6 @@ jobs:
           import android.widget.LinearLayout
           import android.widget.SeekBar
           import android.widget.TextView
-          import kotlin.random.Random
 
           class MenuView(context: Context) : LinearLayout(context) {
               init {
@@ -44,61 +40,35 @@ jobs:
                   setPadding(30, 30, 30, 30)
 
                   val title = TextView(context)
-                  title.text = "魔法控制台"
+                  title.text = "压枪控制台"
                   title.setTextColor(Color.CYAN)
                   addView(title)
 
-                  val btnEsp = Button(context)
-                  btnEsp.text = "透视开启"
-                  btnEsp.setOnClickListener {
-                      Config.espEnable = !Config.espEnable
-                      btnEsp.text = if (Config.espEnable) "透视开启" else "透视关闭"
+                  val btnRecoil = Button(context)
+                  btnRecoil.text = "压枪: 关"
+                  btnRecoil.setOnClickListener {
+                      Config.recoilEnable = !Config.recoilEnable
+                      btnRecoil.text = if (Config.recoilEnable) "压枪: 开" else "压枪: 关"
                   }
-                  addView(btnEsp)
+                  addView(btnRecoil)
 
-                  val btnAim = Button(context)
-                  btnAim.text = "追踪开启"
-                  btnAim.setOnClickListener {
-                      Config.aimEnable = !Config.aimEnable
-                      btnAim.text = if (Config.aimEnable) "追踪开启" else "追踪关闭"
-                  }
-                  addView(btnAim)
+                  val tvPower = TextView(context)
+                  tvPower.text = "力度: 15"
+                  tvPower.setTextColor(Color.WHITE)
+                  addView(tvPower)
 
-                  val tvFov = TextView(context)
-                  tvFov.text = "追踪范围: 800"
-                  tvFov.setTextColor(Color.WHITE)
-                  addView(tvFov)
-
-                  val seekFov = SeekBar(context)
-                  seekFov.max = 1000
-                  seekFov.progress = 800
-                  seekFov.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                  val seekPower = SeekBar(context)
+                  seekPower.max = 40
+                  seekPower.progress = 15
+                  seekPower.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                       override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                          Config.aimFov = progress.toFloat()
-                          tvFov.text = "追踪范围: $progress"
+                          Config.recoilPower = progress.toFloat()
+                          tvPower.text = "力度: $progress"
                       }
                       override fun onStartTrackingTouch(seekBar: SeekBar?) {}
                       override fun onStopTrackingTouch(seekBar: SeekBar?) {}
                   })
-                  addView(seekFov)
-
-                  val tvChance = TextView(context)
-                  tvChance.text = "追踪概率: 100%"
-                  tvChance.setTextColor(Color.WHITE)
-                  addView(tvChance)
-
-                  val seekChance = SeekBar(context)
-                  seekChance.max = 100
-                  seekChance.progress = 100
-                  seekChance.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                      override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                          Config.trackChance = progress
-                          tvChance.text = "追踪概率: $progress%"
-                      }
-                      override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-                      override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-                  })
-                  addView(seekChance)
+                  addView(seekPower)
               }
 
               private var initialX = 0
@@ -126,7 +96,7 @@ jobs:
           }
           EOF
 
-          # 3. 无障碍服务（补全了 AccessibilityEvent 导入！）
+          # 3. 无障碍服务（核心压枪逻辑：监听屏幕触摸）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/HackAccessibilityService.kt
           package com.android.systemhelper
           import android.accessibilityservice.AccessibilityService
@@ -138,22 +108,14 @@ jobs:
           import android.view.Gravity
           import android.view.WindowManager
           import android.view.accessibility.AccessibilityEvent
-          import kotlin.random.Random
 
           class HackAccessibilityService : AccessibilityService() {
               private lateinit var wm: WindowManager
-              private lateinit var overlay: OverlayView
               private val handler = Handler(Looper.getMainLooper())
+              private var isShooting = false
 
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
-                  overlay = OverlayView(this)
-                  val lpDraw = WindowManager.LayoutParams(
-                      WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
-                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                      PixelFormat.TRANSLUCENT)
-                  wm.addView(overlay, lpDraw)
 
                   val menu = MenuView(this)
                   val lpMenu = WindowManager.LayoutParams(
@@ -165,185 +127,41 @@ jobs:
                   lpMenu.x = 50
                   lpMenu.y = 200
                   wm.addView(menu, lpMenu)
-
+                  
+                  // 核心压枪循环
                   handler.postDelayed(object : Runnable {
                       override fun run() {
-                          overlay.invalidate()
-                          if (Config.aimEnable) doMagneticAim()
-                          handler.postDelayed(this, 16L)
+                          if (Config.recoilEnable && isShooting) {
+                              doRecoil()
+                          }
+                          handler.postDelayed(this, 30L)
                       }
-                  }, 16L)
+                  }, 30L)
               }
 
-              private fun doMagneticAim() {
-                  if (!Config.authed || Detector.latest.isEmpty()) return
-                  if (Random.nextInt(100) >= Config.trackChance) return
-
+              private fun doRecoil() {
                   val dm = resources.displayMetrics
                   val cx = dm.widthPixels / 2f
                   val cy = dm.heightPixels / 2f
-                  var bestTarget: Detector.Target? = null
-                  var minDist = Config.aimFov
-                  
-                  for (t in Detector.latest) {
-                      val tx = t.x + t.w / 2f
-                      val ty = t.y + t.h / 2f
-                      val dist = Math.hypot((tx - cx).toDouble(), (ty - cy).toDouble()).toFloat()
-                      if (dist < minDist) { minDist = dist; bestTarget = t }
-                  }
-                  
-                  bestTarget?.let { target ->
-                      val targetX = target.x + target.w / 2f
-                      val targetY = target.y + target.h / 3f
-                      val path = Path()
-                      path.moveTo(cx, cy)
-                      path.lineTo(targetX, targetY)
-                      val gesture = GestureDescription.Builder()
-                          .addStroke(GestureDescription.StrokeDescription(path, 0, 20))
-                          .build()
-                      dispatchGesture(gesture, null, null)
+
+                  // 模拟手指向下微滑
+                  val path = Path()
+                  path.moveTo(cx, cy)
+                  path.lineTo(cx, cy + Config.recoilPower)
+
+                  val gesture = GestureDescription.Builder()
+                      .addStroke(GestureDescription.StrokeDescription(path, 0, 20))
+                      .build()
+                  dispatchGesture(gesture, null, null)
+              }
+
+              // 监听屏幕上的触摸事件，判断是否按住开火键
+              override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+                  if (event?.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED) {
+                      // 实际实战中，用 TYPE_VIEW_SCROLLED 或者触摸监听判定玩家是否在射击
                   }
               }
-              override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
               override fun onInterrupt() {}
-          }
-          EOF
-
-          # 4. 画布
-          cat << 'EOF' > app/src/main/java/com/android/systemhelper/OverlayView.kt
-          package com.android.systemhelper
-          import android.content.Context
-          import android.graphics.*
-          import android.view.View
-
-          class OverlayView(c: Context) : View(c) {
-              private val paintBox = Paint().apply { color = 0xFF00FF00.toInt(); style = Paint.Style.STROKE; strokeWidth = 4f }
-              override fun onDraw(canvas: Canvas) {
-                  super.onDraw(canvas)
-                  if (!Config.authed || !Config.espEnable) return
-                  for (t in Detector.latest) {
-                      canvas.drawRect(t.x.toFloat(), t.y.toFloat(), (t.x + t.w).toFloat(), (t.y + t.h).toFloat(), paintBox)
-                  }
-              }
-          }
-          EOF
-
-          # 5. 识别器
-          cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
-          package com.android.systemhelper
-          import android.graphics.Bitmap
-          import org.opencv.android.Utils
-          import org.opencv.core.*
-          import org.opencv.imgproc.Imgproc
-          import java.util.concurrent.Executors
-
-          object Detector {
-              data class Target(val x: Int, val y: Int, val w: Int, val h: Int, val health: Int)
-              @Volatile var latest: List<Target> = emptyList()
-              private val executor = Executors.newSingleThreadExecutor()
-              private var busy = false
-              private const val SCALE = 0.3f
-
-              fun submit(bmp: Bitmap) {
-                  if (busy) return
-                  busy = true
-                  executor.execute {
-                      try {
-                          val sw = (bmp.width * SCALE).toInt()
-                          val sh = (bmp.height * SCALE).toInt()
-                          val scaledBmp = Bitmap.createScaledBitmap(bmp, sw, sh, false)
-                          val rgba = Mat(); Utils.bitmapToMat(scaledBmp, rgba)
-                          val hsv = Mat(); Imgproc.cvtColor(rgba, hsv, Imgproc.COLOR_RGB2HSV)
-                          
-                          val mask1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), mask1)
-                          val mask2 = Mat(); Core.inRange(hsv, Scalar(160.0, 100.0, 100.0), Scalar(180.0, 255.0, 255.0), mask2)
-                          val mask = Mat(); Core.bitwise_or(mask1, mask2, mask)
-                          
-                          val contours = ArrayList<MatOfPoint>()
-                          Imgproc.findContours(mask, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                          
-                          val out = ArrayList<Target>()
-                          for (c in contours) {
-                              val r = Imgproc.boundingRect(c)
-                              if (r.width > 10 && r.height > 5) {
-                                  out.add(Target((r.x / SCALE).toInt(), (r.y / SCALE).toInt(), (r.width / SCALE).toInt(), (r.height / SCALE).toInt(), 100))
-                              }
-                          }
-                          latest = out
-                      } catch (e: Exception) {
-                          e.printStackTrace()
-                      } finally {
-                          busy = false
-                      }
-                  }
-              }
-          }
-          EOF
-
-          # 6. 截屏
-          cat << 'EOF' > app/src/main/java/com/android/systemhelper/ScreenCaptureService.kt
-          package com.android.systemhelper
-          import android.app.*
-          import android.content.Intent
-          import android.graphics.Bitmap
-          import android.graphics.PixelFormat
-          import android.hardware.display.DisplayManager
-          import android.hardware.display.VirtualDisplay
-          import android.media.ImageReader
-          import android.media.projection.MediaProjectionManager
-          import android.os.Build
-          import android.os.Handler
-          import android.os.IBinder
-          import android.os.Looper
-          import androidx.core.app.NotificationCompat
-
-          class ScreenCaptureService : Service() {
-              private var vd: VirtualDisplay? = null
-              private var reader: ImageReader? = null
-
-              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-                  try {
-                      createChannel()
-                      startForeground(1, getNotif())
-                      val resultCode = intent?.getIntExtra("code", 0) ?: 0
-                      val data = intent?.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
-                      val mp = (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager).getMediaProjection(resultCode, data)
-                      val dm = resources.displayMetrics
-                      val w = dm.widthPixels
-                      val h = dm.heightPixels
-                      
-                      reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
-                      vd = mp.createVirtualDisplay("cap", w, h, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
-                      
-                      reader!!.setOnImageAvailableListener({ r ->
-                          val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
-                          try {
-                              val buffer = img.planes[0].buffer
-                              val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                              bmp.copyPixelsFromBuffer(buffer)
-                              Detector.submit(bmp)
-                          } catch (e: Exception) {
-                              e.printStackTrace()
-                          } finally {
-                              img.close()
-                          }
-                      }, Handler(Looper.getMainLooper()))
-                  } catch (e: Exception) {
-                      e.printStackTrace()
-                  }
-                  return START_STICKY
-              }
-
-              private fun createChannel() {
-                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                      val ch = NotificationChannel("1", "SYS", NotificationManager.IMPORTANCE_LOW)
-                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
-                  }
-              }
-              private fun getNotif(): Notification {
-                  return NotificationCompat.Builder(this, "1").setContentTitle("运行中").setSmallIcon(android.R.drawable.ic_menu_camera).build()
-              }
-              override fun onBind(intent: Intent?): IBinder? = null
           }
           EOF
 

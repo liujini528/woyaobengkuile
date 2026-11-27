@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Build Ultimate Hack v3
+      - name: Build Ultimate Hack v4
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
 
@@ -206,7 +206,7 @@ jobs:
           }
           EOF
 
-          # 5. 红血条识别器（精准识别敌人的红血条，告别满屏乱框）
+          # 5. 红血条识别器（全部替换，解决 COLOR_RGBA2HSV 错误）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
           package com.android.systemhelper
           import android.graphics.Bitmap
@@ -231,9 +231,10 @@ jobs:
                           val sh = (bmp.height * SCALE).toInt()
                           val scaledBmp = Bitmap.createScaledBitmap(bmp, sw, sh, false)
                           val rgba = Mat(); Utils.bitmapToMat(scaledBmp, rgba)
-                          val hsv = Mat(); Imgproc.cvtColor(rgba, hsv, Imgproc.COLOR_RGBA2HSV)
+                          val hsv = Mat(); 
+                          // 这里就是正确的 RGB2HSV ！再也不会报错了！
+                          Imgproc.cvtColor(rgba, hsv, Imgproc.COLOR_RGB2HSV)
                           
-                          // 识别红色的血条 (HSV 红色范围)
                           val mask1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), mask1)
                           val mask2 = Mat(); Core.inRange(hsv, Scalar(160.0, 100.0, 100.0), Scalar(180.0, 255.0, 255.0), mask2)
                           val mask = Mat(); Core.bitwise_or(mask1, mask2, mask)
@@ -244,7 +245,6 @@ jobs:
                           val out = ArrayList<Target>()
                           for (c in contours) {
                               val r = Imgproc.boundingRect(c)
-                              // 过滤掉太小的噪点
                               if (r.width > 10 && r.height > 5 && r.width < 300 && r.height < 200) {
                                   out.add(Target((r.x / SCALE).toInt(), (r.y / SCALE).toInt(), (r.width / SCALE).toInt(), (r.height / SCALE).toInt(), 100))
                               }
@@ -260,7 +260,7 @@ jobs:
           }
           EOF
 
-          # 6. 截屏服务（去 OpenCV 防闪退版）
+          # 6. 截屏服务
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/ScreenCaptureService.kt
           package com.android.systemhelper
           import android.app.*
@@ -285,7 +285,6 @@ jobs:
                   try {
                       createChannel()
                       startForeground(1, getNotif())
-                      
                       val resultCode = intent?.getIntExtra("code", 0) ?: 0
                       val data = intent?.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
                       val mp = (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager).getMediaProjection(resultCode, data)

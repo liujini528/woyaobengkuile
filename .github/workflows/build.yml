@@ -7,30 +7,29 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Build Ultimate Hack
+      - name: Build Ultimate Hack v2
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
 
-          # 1. 核心配置（全局变量）
+          # 1. 全局配置
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Config.kt
           package com.android.systemhelper
           object Config {
               var espEnable = true
               var aimEnable = false
-              var aimSmooth = 1.0f // 自瞄平滑度 (1.0 极速, 5.0 慢速)
-              var aimFov = 600f    // 自瞄范围 (屏幕中心半径)
+              var aimSmooth = 1.0f
+              var aimFov = 600f
               var authed = false
           }
           EOF
 
-          # 2. 悬浮窗控制台 (UI)
+          # 2. 悬浮窗控制台
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/MenuView.kt
           package com.android.systemhelper
           import android.content.Context
           import android.graphics.Color
           import android.view.Gravity
           import android.view.MotionEvent
-          import android.view.View
           import android.widget.Button
           import android.widget.LinearLayout
           import android.widget.SeekBar
@@ -39,16 +38,14 @@ jobs:
           class MenuView(context: Context) : LinearLayout(context) {
               init {
                   orientation = VERTICAL
-                  setBackgroundColor(Color.parseColor("#80000000")) // 半透明黑底
+                  setBackgroundColor(Color.parseColor("#80000000"))
                   setPadding(30, 30, 30, 30)
 
-                  // 标题
                   val title = TextView(context)
-                  title.text = "Hack Menu (Drag to move)"
+                  title.text = "Hack Menu (Drag)"
                   title.setTextColor(Color.CYAN)
                   addView(title)
 
-                  // 透视开关
                   val btnEsp = Button(context)
                   btnEsp.text = "ESP: ON"
                   btnEsp.setOnClickListener {
@@ -57,7 +54,6 @@ jobs:
                   }
                   addView(btnEsp)
 
-                  // 自瞄开关
                   val btnAim = Button(context)
                   btnAim.text = "Aimbot: OFF"
                   btnAim.setOnClickListener {
@@ -66,7 +62,6 @@ jobs:
                   }
                   addView(btnAim)
 
-                  // 自瞄平滑度
                   val tvSmooth = TextView(context)
                   tvSmooth.text = "Aim Smooth: 1.0"
                   tvSmooth.setTextColor(Color.WHITE)
@@ -86,7 +81,6 @@ jobs:
                   addView(seekSmooth)
               }
 
-              // 允许拖动菜单
               private var initialX = 0
               private var initialY = 0
               private var initialTouchX = 0f
@@ -112,7 +106,7 @@ jobs:
           }
           EOF
 
-          # 3. 无障碍服务（挂载菜单 + 执行自瞄 + 绘制透视）
+          # 3. 无障碍服务
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/HackAccessibilityService.kt
           package com.android.systemhelper
           import android.accessibilityservice.AccessibilityService
@@ -132,7 +126,6 @@ jobs:
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
 
-                  // 1. 挂载透视绘图图层
                   overlay = OverlayView(this)
                   val lpDraw = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
@@ -141,7 +134,6 @@ jobs:
                       PixelFormat.TRANSLUCENT)
                   wm.addView(overlay, lpDraw)
 
-                  // 2. 挂载控制菜单悬浮窗
                   val menu = MenuView(this)
                   val lpMenu = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
@@ -153,12 +145,11 @@ jobs:
                   lpMenu.y = 200
                   wm.addView(menu, lpMenu)
 
-                  // 3. 开启循环：画框 + 自瞄
                   handler.postDelayed(object : Runnable {
                       override fun run() {
                           overlay.invalidate()
                           if (Config.aimEnable) doAimAssist()
-                          handler.postDelayed(this, 16L) // 60 FPS
+                          handler.postDelayed(this, 16L)
                       }
                   }, 16L)
               }
@@ -168,48 +159,35 @@ jobs:
                   val dm = resources.displayMetrics
                   val cx = dm.widthPixels / 2f
                   val cy = dm.heightPixels / 2f
-
                   var bestTarget: Detector.Target? = null
                   var minDist = Config.aimFov
-
                   for (t in Detector.latest) {
                       val tx = t.x + t.w / 2f
                       val ty = t.y + t.h / 2f
                       val dist = Math.hypot((tx - cx).toDouble(), (ty - cy).toDouble()).toFloat()
-                      if (dist < minDist) {
-                          minDist = dist
-                          bestTarget = t
-                      }
+                      if (dist < minDist) { minDist = dist; bestTarget = t }
                   }
-
                   bestTarget?.let { target ->
                       val targetX = target.x + target.w / 2f
-                      val targetY = target.y + target.h / 3f // 瞄准上半身
-
-                      // 平滑算法：把目标距离除以平滑度，决定滑多少
+                      val targetY = target.y + target.h / 3f
                       val dx = (targetX - cx) / Config.aimSmooth
                       val dy = (targetY - cy) / Config.aimSmooth
-
-                      // 死区：如果目标已经在准星附近（10像素内），不要画蛇添足
                       if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
-
                       val path = Path()
                       path.moveTo(cx, cy)
                       path.lineTo(cx + dx, cy + dy)
-                      
                       val gesture = GestureDescription.Builder()
-                          .addStroke(GestureDescription.StrokeDescription(path, 0, 20)) // 极快滑动
+                          .addStroke(GestureDescription.StrokeDescription(path, 0, 20))
                           .build()
                       dispatchGesture(gesture, null, null)
                   }
               }
-
               override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {}
               override fun onInterrupt() {}
           }
           EOF
 
-          # 4. 透视图层（只画框，受 ESP 开关控制）
+          # 4. 画布
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/OverlayView.kt
           package com.android.systemhelper
           import android.content.Context
@@ -218,8 +196,6 @@ jobs:
 
           class OverlayView(c: Context) : View(c) {
               private val paintBox = Paint().apply { color = 0xFF00FF00.toInt(); style = Paint.Style.STROKE; strokeWidth = 4f }
-              private val paintText = Paint().apply { color = 0xFF00FF00.toInt(); textSize = 36f; isAntiAlias = true }
-
               override fun onDraw(canvas: Canvas) {
                   super.onDraw(canvas)
                   if (!Config.authed || !Config.espEnable) return
@@ -230,7 +206,7 @@ jobs:
           }
           EOF
 
-          # 5. 边缘检测识别器
+          # 5. 边缘检测
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
           package com.android.systemhelper
           import android.graphics.Bitmap
@@ -258,10 +234,8 @@ jobs:
                           val gray = Mat(); Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
                           val edges = Mat()
                           Imgproc.Canny(gray, edges, 50.0, 150.0)
-                          
                           val contours = ArrayList<MatOfPoint>()
                           Imgproc.findContours(edges, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                          
                           val out = ArrayList<Target>()
                           for (c in contours) {
                               val r = Imgproc.boundingRect(c)
@@ -277,6 +251,75 @@ jobs:
                       }
                   }
               }
+          }
+          EOF
+
+          # 6. 截屏服务（去掉 OpenCV 初始化，彻底防闪退）
+          cat << 'EOF' > app/src/main/java/com/android/systemhelper/ScreenCaptureService.kt
+          package com.android.systemhelper
+          import android.app.*
+          import android.content.Intent
+          import android.graphics.Bitmap
+          import android.graphics.PixelFormat
+          import android.hardware.display.DisplayManager
+          import android.hardware.display.VirtualDisplay
+          import android.media.ImageReader
+          import android.media.projection.MediaProjectionManager
+          import android.os.Build
+          import android.os.Handler
+          import android.os.IBinder
+          import android.os.Looper
+          import androidx.core.app.NotificationCompat
+
+          class ScreenCaptureService : Service() {
+              private var vd: VirtualDisplay? = null
+              private var reader: ImageReader? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  try {
+                      createChannel()
+                      startForeground(1, getNotif())
+                      
+                      val resultCode = intent?.getIntExtra("code", 0) ?: 0
+                      val data = intent?.getParcelableExtra<Intent>("data") ?: return START_NOT_STICKY
+                      val mp = (getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager).getMediaProjection(resultCode, data)
+                      val dm = resources.displayMetrics
+                      val w = dm.widthPixels
+                      val h = dm.heightPixels
+                      
+                      // 强制对齐尺寸
+                      reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
+                      vd = mp.createVirtualDisplay("cap", w, h, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
+                      
+                      reader!!.setOnImageAvailableListener({ r ->
+                          val img = r.acquireLatestImage() ?: return@setOnImageAvailableListener
+                          try {
+                              val buffer = img.planes[0].buffer
+                              val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                              bmp.copyPixelsFromBuffer(buffer)
+                              Detector.submit(bmp)
+                          } catch (e: Exception) {
+                              e.printStackTrace()
+                          } finally {
+                              img.close()
+                          }
+                      }, Handler(Looper.getMainLooper()))
+                  } catch (e: Exception) {
+                      e.printStackTrace()
+                  }
+                  return START_STICKY
+              }
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val ch = NotificationChannel("1", "SYS", NotificationManager.IMPORTANCE_LOW)
+                      (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
+                  }
+              }
+              private fun getNotif(): Notification {
+                  return NotificationCompat.Builder(this, "1").setContentTitle("运行中").setSmallIcon(android.R.drawable.ic_menu_camera).build()
+              }
+              override fun onBind(intent: Intent?): IBinder? = null
           }
           EOF
 

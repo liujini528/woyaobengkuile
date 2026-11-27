@@ -7,11 +7,112 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Fix Errors and Rebuild (Aimbot + ESP)
+      - name: Build Ultimate Hack
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
-          
-          # 核心服务：高频刷新画布 + 自动执行滑动自瞄
+
+          # 1. 核心配置（全局变量）
+          cat << 'EOF' > app/src/main/java/com/android/systemhelper/Config.kt
+          package com.android.systemhelper
+          object Config {
+              var espEnable = true
+              var aimEnable = false
+              var aimSmooth = 1.0f // 自瞄平滑度 (1.0 极速, 5.0 慢速)
+              var aimFov = 600f    // 自瞄范围 (屏幕中心半径)
+              var authed = false
+          }
+          EOF
+
+          # 2. 悬浮窗控制台 (UI)
+          cat << 'EOF' > app/src/main/java/com/android/systemhelper/MenuView.kt
+          package com.android.systemhelper
+          import android.content.Context
+          import android.graphics.Color
+          import android.view.Gravity
+          import android.view.MotionEvent
+          import android.view.View
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.SeekBar
+          import android.widget.TextView
+
+          class MenuView(context: Context) : LinearLayout(context) {
+              init {
+                  orientation = VERTICAL
+                  setBackgroundColor(Color.parseColor("#80000000")) // 半透明黑底
+                  setPadding(30, 30, 30, 30)
+
+                  // 标题
+                  val title = TextView(context)
+                  title.text = "Hack Menu (Drag to move)"
+                  title.setTextColor(Color.CYAN)
+                  addView(title)
+
+                  // 透视开关
+                  val btnEsp = Button(context)
+                  btnEsp.text = "ESP: ON"
+                  btnEsp.setOnClickListener {
+                      Config.espEnable = !Config.espEnable
+                      btnEsp.text = if (Config.espEnable) "ESP: ON" else "ESP: OFF"
+                  }
+                  addView(btnEsp)
+
+                  // 自瞄开关
+                  val btnAim = Button(context)
+                  btnAim.text = "Aimbot: OFF"
+                  btnAim.setOnClickListener {
+                      Config.aimEnable = !Config.aimEnable
+                      btnAim.text = if (Config.aimEnable) "Aimbot: ON" else "Aimbot: OFF"
+                  }
+                  addView(btnAim)
+
+                  // 自瞄平滑度
+                  val tvSmooth = TextView(context)
+                  tvSmooth.text = "Aim Smooth: 1.0"
+                  tvSmooth.setTextColor(Color.WHITE)
+                  addView(tvSmooth)
+
+                  val seekSmooth = SeekBar(context)
+                  seekSmooth.max = 50
+                  seekSmooth.progress = 10
+                  seekSmooth.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                      override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                          Config.aimSmooth = (progress / 10f).coerceAtLeast(1f)
+                          tvSmooth.text = "Aim Smooth: ${Config.aimSmooth}"
+                      }
+                      override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+                      override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+                  })
+                  addView(seekSmooth)
+              }
+
+              // 允许拖动菜单
+              private var initialX = 0
+              private var initialY = 0
+              private var initialTouchX = 0f
+              private var initialTouchY = 0f
+
+              override fun onTouchEvent(event: MotionEvent): Boolean {
+                  when (event.action) {
+                      MotionEvent.ACTION_DOWN -> {
+                          initialX = this.x.toInt()
+                          initialY = this.y.toInt()
+                          initialTouchX = event.rawX
+                          initialTouchY = event.rawY
+                          return true
+                      }
+                      MotionEvent.ACTION_MOVE -> {
+                          this.x = initialX + (event.rawX - initialTouchX)
+                          this.y = initialY + (event.rawY - initialTouchY)
+                          return true
+                      }
+                  }
+                  return super.onTouchEvent(event)
+              }
+          }
+          EOF
+
+          # 3. 无障碍服务（挂载菜单 + 执行自瞄 + 绘制透视）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/HackAccessibilityService.kt
           package com.android.systemhelper
           import android.accessibilityservice.AccessibilityService
@@ -20,6 +121,7 @@ jobs:
           import android.graphics.PixelFormat
           import android.os.Handler
           import android.os.Looper
+          import android.view.Gravity
           import android.view.WindowManager
 
           class HackAccessibilityService : AccessibilityService() {
@@ -29,36 +131,47 @@ jobs:
 
               override fun onServiceConnected() {
                   wm = getSystemService(WINDOW_SERVICE) as WindowManager
+
+                  // 1. 挂载透视绘图图层
                   overlay = OverlayView(this)
-                  
-                  val lp = WindowManager.LayoutParams(
+                  val lpDraw = WindowManager.LayoutParams(
                       WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT,
                       WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                       WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                       PixelFormat.TRANSLUCENT)
-                  wm.addView(overlay, lp)
-                  
+                  wm.addView(overlay, lpDraw)
+
+                  // 2. 挂载控制菜单悬浮窗
+                  val menu = MenuView(this)
+                  val lpMenu = WindowManager.LayoutParams(
+                      WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+                      WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                      WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                      PixelFormat.TRANSLUCENT)
+                  lpMenu.gravity = Gravity.TOP or Gravity.START
+                  lpMenu.x = 50
+                  lpMenu.y = 200
+                  wm.addView(menu, lpMenu)
+
+                  // 3. 开启循环：画框 + 自瞄
                   handler.postDelayed(object : Runnable {
                       override fun run() {
                           overlay.invalidate()
-                          performAimAssist()
-                          handler.postDelayed(this, 50L) // 每50ms执行一次自瞄
+                          if (Config.aimEnable) doAimAssist()
+                          handler.postDelayed(this, 16L) // 60 FPS
                       }
-                  }, 50L)
+                  }, 16L)
               }
 
-              private fun performAimAssist() {
+              private fun doAimAssist() {
                   if (!Config.authed || Detector.latest.isEmpty()) return
-                  
-                  // 获取屏幕中心点（准星位置）
                   val dm = resources.displayMetrics
                   val cx = dm.widthPixels / 2f
                   val cy = dm.heightPixels / 2f
 
-                  // 找到离准星最近的目标
                   var bestTarget: Detector.Target? = null
-                  var minDist = 600f // 自瞄范围：600像素，避免乱锁
-                  
+                  var minDist = Config.aimFov
+
                   for (t in Detector.latest) {
                       val tx = t.x + t.w / 2f
                       val ty = t.y + t.h / 2f
@@ -69,17 +182,23 @@ jobs:
                       }
                   }
 
-                  // 模拟手指滑动，把准星拖过去
                   bestTarget?.let { target ->
                       val targetX = target.x + target.w / 2f
-                      val targetY = target.y + target.h / 3f // 偏向头部位置
-                      
+                      val targetY = target.y + target.h / 3f // 瞄准上半身
+
+                      // 平滑算法：把目标距离除以平滑度，决定滑多少
+                      val dx = (targetX - cx) / Config.aimSmooth
+                      val dy = (targetY - cy) / Config.aimSmooth
+
+                      // 死区：如果目标已经在准星附近（10像素内），不要画蛇添足
+                      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return
+
                       val path = Path()
                       path.moveTo(cx, cy)
-                      path.lineTo(targetX, targetY)
+                      path.lineTo(cx + dx, cy + dy)
                       
                       val gesture = GestureDescription.Builder()
-                          .addStroke(GestureDescription.StrokeDescription(path, 0, 40)) // 40ms 快速滑动
+                          .addStroke(GestureDescription.StrokeDescription(path, 0, 20)) // 极快滑动
                           .build()
                       dispatchGesture(gesture, null, null)
                   }
@@ -89,8 +208,8 @@ jobs:
               override fun onInterrupt() {}
           }
           EOF
-          
-          # 修改画布，取消死框，只画动态目标
+
+          # 4. 透视图层（只画框，受 ESP 开关控制）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/OverlayView.kt
           package com.android.systemhelper
           import android.content.Context
@@ -103,7 +222,7 @@ jobs:
 
               override fun onDraw(canvas: Canvas) {
                   super.onDraw(canvas)
-                  if (!Config.authed) return
+                  if (!Config.authed || !Config.espEnable) return
                   for (t in Detector.latest) {
                       canvas.drawRect(t.x.toFloat(), t.y.toFloat(), (t.x + t.w).toFloat(), (t.y + t.h).toFloat(), paintBox)
                   }
@@ -111,7 +230,7 @@ jobs:
           }
           EOF
 
-          # 边缘检测，暴力识别人形轮廓
+          # 5. 边缘检测识别器
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
           package com.android.systemhelper
           import android.graphics.Bitmap
@@ -137,7 +256,6 @@ jobs:
                           val scaledBmp = Bitmap.createScaledBitmap(bmp, sw, sh, false)
                           val rgba = Mat(); Utils.bitmapToMat(scaledBmp, rgba)
                           val gray = Mat(); Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-                          
                           val edges = Mat()
                           Imgproc.Canny(gray, edges, 50.0, 150.0)
                           

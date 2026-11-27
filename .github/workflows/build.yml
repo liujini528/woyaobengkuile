@@ -7,7 +7,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip source code
         run: unzip -o src.zip
-      - name: Build Ultimate Hack v2
+      - name: Build Ultimate Hack v3
         run: |
           echo '<?xml version="1.0" encoding="utf-8"?><accessibility-service xmlns:android="http://schemas.android.com/apk/res/android" android:accessibilityEventTypes="typeWindowStateChanged" android:accessibilityFeedbackType="feedbackGeneric" android:canPerformGestures="true" android:canRetrieveWindowContent="false" android:notificationTimeout="100" android:description="@string/app_name" />' > app/src/main/res/xml/accessibility_config.xml
 
@@ -206,7 +206,7 @@ jobs:
           }
           EOF
 
-          # 5. 边缘检测
+          # 5. 红血条识别器（精准识别敌人的红血条，告别满屏乱框）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/Detector.kt
           package com.android.systemhelper
           import android.graphics.Bitmap
@@ -231,15 +231,21 @@ jobs:
                           val sh = (bmp.height * SCALE).toInt()
                           val scaledBmp = Bitmap.createScaledBitmap(bmp, sw, sh, false)
                           val rgba = Mat(); Utils.bitmapToMat(scaledBmp, rgba)
-                          val gray = Mat(); Imgproc.cvtColor(rgba, gray, Imgproc.COLOR_RGBA2GRAY)
-                          val edges = Mat()
-                          Imgproc.Canny(gray, edges, 50.0, 150.0)
+                          val hsv = Mat(); Imgproc.cvtColor(rgba, hsv, Imgproc.COLOR_RGBA2HSV)
+                          
+                          // 识别红色的血条 (HSV 红色范围)
+                          val mask1 = Mat(); Core.inRange(hsv, Scalar(0.0, 100.0, 100.0), Scalar(10.0, 255.0, 255.0), mask1)
+                          val mask2 = Mat(); Core.inRange(hsv, Scalar(160.0, 100.0, 100.0), Scalar(180.0, 255.0, 255.0), mask2)
+                          val mask = Mat(); Core.bitwise_or(mask1, mask2, mask)
+                          
                           val contours = ArrayList<MatOfPoint>()
-                          Imgproc.findContours(edges, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                          Imgproc.findContours(mask, contours, Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                          
                           val out = ArrayList<Target>()
                           for (c in contours) {
                               val r = Imgproc.boundingRect(c)
-                              if (r.width > 20 && r.height > 40 && r.width < 400 && r.height < 800) {
+                              // 过滤掉太小的噪点
+                              if (r.width > 10 && r.height > 5 && r.width < 300 && r.height < 200) {
                                   out.add(Target((r.x / SCALE).toInt(), (r.y / SCALE).toInt(), (r.width / SCALE).toInt(), (r.height / SCALE).toInt(), 100))
                               }
                           }
@@ -254,7 +260,7 @@ jobs:
           }
           EOF
 
-          # 6. 截屏服务（去掉 OpenCV 初始化，彻底防闪退）
+          # 6. 截屏服务（去 OpenCV 防闪退版）
           cat << 'EOF' > app/src/main/java/com/android/systemhelper/ScreenCaptureService.kt
           package com.android.systemhelper
           import android.app.*
@@ -287,7 +293,6 @@ jobs:
                       val w = dm.widthPixels
                       val h = dm.heightPixels
                       
-                      // 强制对齐尺寸
                       reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
                       vd = mp.createVirtualDisplay("cap", w, h, dm.densityDpi, DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader!!.surface, null, null)
                       
